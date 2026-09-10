@@ -43,7 +43,7 @@ MIN_DECISIVE_COVERAGE_PERCENT = 90.0
 MIN_DECISIVE_DURATION_SECONDS = int(6.5 * 24 * 60 * 60)
 MIN_ACTIVE_DAYS = 3
 MIN_NEW_SESSION_EVENTS = 20
-USAGE_PARSER_VERSION = 2
+USAGE_PARSER_VERSION = 3
 PROCESS_MATCHER_VERSION = 2
 OUTCOME_ATTRIBUTION_VERSION = 2
 LATENCY_BUCKETS_MS = (10, 50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000)
@@ -88,7 +88,7 @@ TOOLS: tuple[Tool, ...] = (
     Tool("cmem", "cmem", ("cmem",), ("cmem",), (), ("cmem", "--version")),
     Tool("codex_security", "codex-security", ("codex-security",), ("codex-security",), (), ("codex-security", "--version"), process_entrypoints=("server",), process_path_roots=("/codex-security/",)),
     Tool("codex_tui", "codex-tui", ("codex",), ("codex",), (), ("codex", "--version")),
-    Tool("codebase_memory_mcp", "codebase-memory-mcp", ("codebase-memory-mcp",), ("codebase-memory",), (), ("codebase-memory-mcp", "--version")),
+    Tool("codebase_memory_mcp", "codebase-memory-mcp", ("codebase-memory-mcp",), ("codebase-memory-mcp",), (), ("codebase-memory-mcp", "--version")),
 )
 
 
@@ -345,98 +345,113 @@ def without_heredoc_bodies(command: str) -> str:
     return "".join(executable_lines)
 
 
-def shell_usage_keys(command: str, command_index: Mapping[str, str]) -> set[str]:
-    """Extract whitelisted executable names only; input is discarded immediately."""
-    found: set[str] = set()
-    for segment in re.split(r"(?:&&|\|\||\||;|\n)", without_heredoc_bodies(command)):
-        tokens = re.findall(r"(?:(?:\\.)|[^\s])+", segment.strip())
-        executable_seen = False
-        delegated_command = False
-        for token in tokens:
-            if token == "--":
-                delegated_command = True
-                continue
-            name = Path(token).name.lower()
-            if name.startswith("-") or ("=" in name and not name.startswith("=")):
-                continue
-            if name in {"command", "env", "sudo", "time", "nice", "nohup", "npx", "pnpx", "pnpm", "bunx", "uvx", "exec"}:
-                continue
-            key = command_index.get(name)
-            if not executable_seen:
-                executable_seen = True
-                if key:
-                    found.add(key)
-            elif delegated_command and key:
-                found.add(key)
-    return found
+SHELL_TOKENS = re.compile(
+    r'''(?P<space>[^\S\n]+)|(?P<comment>\#[^\n]*)|(?P<operator>[;&|()<>\n]+)|(?P<word>(?:[^\s;&|()<>'"\\]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+)'''
+)
 
 
-def argv_usage_keys(argv: Sequence[str], command_index: Mapping[str, str]) -> set[str]:
-    """Interpret one completed argv without treating ordinary arguments as commands."""
-    values = [value for value in argv if isinstance(value, str)]
+def shell_commands(command: str) -> list[list[str]]:
+    """Tokenize literal shell words without executing expansions or substitutions."""
+    commands: list[list[str]] = [[]]
+    skip_redirect_target = False
+    source = without_heredoc_bodies(command)
+    position = 0
+    while position < len(source):
+        match = SHELL_TOKENS.match(source, position)
+        if match is None:
+            # Malformed/dynamic syntax is not evidence of a tool invocation.
+            return []
+        position = match.end()
+        if match.lastgroup in {"space", "comment"}:
+            continue
+        token = match.group()
+        if match.lastgroup == "operator":
+            if "<" in token or ">" in token:
+                if commands[-1] and commands[-1][-1].isdigit():
+                    commands[-1].pop()
+                skip_redirect_target = True
+            else:
+                commands.append([])
+                skip_redirect_target = False
+            continue
+        if skip_redirect_target:
+            skip_redirect_target = False
+            continue
+        try:
+            words = shlex.split(token)
+        except ValueError:
+            return []
+        commands[-1].extend(words)
+    return [argv for argv in commands if argv]
+
+
+def command_invocations(argv: Sequence[str], depth: int = 0) -> list[list[str]]:
+    """Follow only known command-launching wrappers; ordinary argv stays data."""
+    if depth > 8 or not argv or not all(isinstance(value, str) for value in argv):
+        return []
+    values = list(argv)
+    while values and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", values[0], re.DOTALL):
+        values.pop(0)
     if not values:
-        return set()
+        return []
     executable = Path(values[0]).name.lower()
     if executable in {"sh", "bash", "zsh", "dash", "fish"}:
         for position, option in enumerate(values[1:-1], start=1):
-            if option.startswith("-") and "c" in option[1:]:
-                return shell_usage_keys(values[position + 1], command_index)
-        return set()
-    found: set[str] = set()
-    executable_seen = False
-    delegated_command = False
-    for token in values:
-        if token == "--":
-            delegated_command = True
-            continue
-        name = Path(token).name.lower()
-        if name.startswith("-") or ("=" in name and not name.startswith("=")):
-            continue
-        if name in {"command", "env", "sudo", "time", "nice", "nohup", "npx", "pnpx", "pnpm", "bunx", "uvx", "exec"}:
-            continue
-        key = command_index.get(name)
-        if not executable_seen:
-            executable_seen = True
-            if key:
-                found.add(key)
-        elif delegated_command and key:
-            found.add(key)
-    return found
+            if option.startswith("-") and not option.startswith("--") and "c" in option[1:]:
+                return [invocation for command in shell_commands(values[position + 1])
+                        for invocation in command_invocations(command, depth + 1)]
+        return []
+    if executable in {"command", "env", "sudo", "time", "nice", "nohup", "exec", "npx", "pnpx", "bunx", "uvx", "pnpm"}:
+        non_executing_options = {"--help", "--version"}
+        if executable == "command":
+            non_executing_options.update({"-v", "-V"})
+        if executable == "sudo":
+            non_executing_options.update({"-l", "--list", "-v", "--validate", "-V", "-h"})
+        if any(option in non_executing_options for option in values[1:2]):
+            return []
+        position = 1
+        options_with_values = {
+            "env": {"-u", "--unset", "-C", "--chdir"},
+            "sudo": {"-u", "--user", "-g", "--group"},
+            "nice": {"-n", "--adjustment"},
+            "time": {"-f", "--format", "-o", "--output"},
+            "npx": {"-p", "--package"}, "pnpm": {"-C", "--dir", "--filter"},
+        }.get(executable, set())
+        while position < len(values) and values[position].startswith("-"):
+            option = values[position]
+            position += 1
+            if option == "--":
+                break
+            if option in options_with_values:
+                position += 1
+        if executable == "pnpm":
+            if values[position:position + 1] not in (["exec"], ["dlx"]):
+                return []
+            position += 1
+        return command_invocations(values[position:], depth + 1)
+    result = [values]
+    if executable == "h5i" and values[1:3] == ["capture", "run"] and "--" in values[3:]:
+        result.extend(command_invocations(values[values.index("--", 3) + 1:], depth + 1))
+    return result
+
+
+def shell_usage_keys(command: str, command_index: Mapping[str, str]) -> set[str]:
+    return {key for argv in shell_commands(command) for key in argv_usage_keys(argv, command_index)}
+
+
+def argv_usage_keys(argv: Sequence[str], command_index: Mapping[str, str]) -> set[str]:
+    return {command_index[name] for invocation in command_invocations(argv)
+            if (name := Path(invocation[0]).name.lower()) in command_index}
 
 
 def is_h5i_capture(command: object, depth: int = 0) -> bool:
-    """Identify capture invocation syntax, never infer failure cause from output."""
     if depth > 8:
         return False
-    if isinstance(command, str):
-        try:
-            lexer = shlex.shlex(without_heredoc_bodies(command), posix=True, punctuation_chars=";&|()")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
-        except ValueError:
-            return False
-        segments: list[list[str]] = [[]]
-        for token in tokens:
-            if token and all(char in ";&|()" for char in token):
-                segments.append([])
-            else:
-                segments[-1].append(token)
-        return any(is_h5i_capture(segment, depth + 1) for segment in segments if segment)
-    if not isinstance(command, (list, tuple)) or not all(isinstance(token, str) for token in command):
-        return False
-    tokens = list(command)
-    while tokens and ("=" in tokens[0] or tokens[0] in {"env", "command", "exec", "time"}):
-        tokens.pop(0)
-    if not tokens:
-        return False
-    executable = Path(tokens[0]).name
-    if executable in {"sh", "bash", "zsh", "dash", "fish"}:
-        for position, option in enumerate(tokens[1:-1], start=1):
-            if option.startswith("-") and "c" in option[1:]:
-                return is_h5i_capture(tokens[position + 1], depth + 1)
-        return False
-    return (executable == "h5i" and tokens[1:3] == ["capture", "run"]
-            and "--" in tokens[3:] and tokens.index("--", 3) < len(tokens) - 1)
+    commands = shell_commands(command) if isinstance(command, str) else [command]
+    return any(Path(argv[0]).name == "h5i" and argv[1:3] == ["capture", "run"]
+               and "--" in argv[3:] and argv.index("--", 3) < len(argv) - 1
+               for values in commands if isinstance(values, (list, tuple))
+               for argv in command_invocations(values, depth))
 
 
 def command_index(tools: Iterable[Tool]) -> dict[str, str]:

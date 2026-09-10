@@ -9,7 +9,7 @@ RSS máximo e tamanho dos arquivos de estado/eventos. Isso permite avaliar o
 custo da medição sem persistir comandos ou conteúdo.
 
 As métricas Codex/Claude cobrem todas as sessões concorrentes da máquina. O
-parser v2 usa os eventos concluídos `CommandExecution` e `McpToolCall` como
+parser v3 usa os eventos concluídos `CommandExecution` e `McpToolCall` como
 fontes autoritativas, ignora corpos de heredoc e não transforma nomes apenas
 citados em chamadas. O relatório exclui das métricas de invocação qualquer
 amostra anterior a essa versão, mas preserva seus dados agregados de processo,
@@ -31,6 +31,16 @@ explicitam a quantidade de erros legados sem atribuição. Eventos e relatórios
 já emitidos permanecem preservados. Chamadas pendentes antigas também não
 recebem atribuição causal retroativa. Somente indicadores e contagens são
 persistidos, nunca comandos ou saídas.
+
+O parser v3 respeita aspas, escapes e separadores reais do shell. Argumentos
+após `--` só representam comandos filhos em executores conhecidos, como
+`h5i capture run`. Argumentos comuns e exemplos citados não contam como uso.
+As amostras antigas continuam preservadas, mas não entram nas métricas de uso
+v3; o relatório histórico já emitido não é reescrito.
+
+Antes de publicar ou ativar as unidades, o instalador cria `docs/` se necessário.
+A unidade de coleta só pode escrever no estado; a finalização também pode
+escrever em `docs/`. A simulação com `--dry-run` não cria diretórios.
 
 ## Operação
 

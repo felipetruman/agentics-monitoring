@@ -502,7 +502,7 @@ class ToolTelemetryTests(unittest.TestCase):
         report = telemetry.markdown_report(self.state_dir, self.tools)
         ripgrep_row = next(line for line in report.splitlines() if line.startswith("| ripgrep |"))
         self.assertEqual([cell.strip() for cell in ripgrep_row.split("|")][3], "1")
-        self.assertIn("Métricas de invocação válidas (parser v2): 1/2016", report)
+        self.assertIn(f"Métricas de invocação válidas (parser v{telemetry.USAGE_PARSER_VERSION}): 1/2016", report)
         self.assertIn("1 amostras de bootstrap excluídas", report)
 
     def test_init_creates_new_168_hour_run_and_report_excludes_old_run(self):

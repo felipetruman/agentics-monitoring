@@ -114,7 +114,7 @@ append_command_directory() {
   local executable="$1"
   local executable_path
   executable_path="$(command -v "$executable" 2>/dev/null || true)"
-  [[ -n "$executable_path" ]] || return
+  [[ -n "$executable_path" ]] || return 0
   append_system_path "$(dirname -- "$executable_path")"
 }
 
@@ -255,6 +255,7 @@ prepare_window_for_start() {
 }
 
 install_units() {
+  run mkdir -p -- "$workspace_dir/docs"
   local source_file destination_file temp_file
   local escaped_project escaped_workspace escaped_state escaped_python escaped_home escaped_runtime escaped_window_start escaped_finalize_at escaped_system_path escaped_unset_environment
 

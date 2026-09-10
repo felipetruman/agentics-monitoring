@@ -1,0 +1,13 @@
+[Unit]
+Description=Agenda coleta de telemetria das ferramentas a cada cinco minutos
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=tool-telemetry-sample.service
+
+[Install]
+WantedBy=timers.target

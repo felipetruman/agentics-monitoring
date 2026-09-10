@@ -1,0 +1,42 @@
+[Unit]
+Description=Coleta de telemetria das ferramentas de desenvolvimento
+Documentation=file://@RUNTIME_DIR@/README.md
+ConditionPathExists=@RUNTIME_DIR@/tool_telemetry.py
+
+[Service]
+Type=oneshot
+WorkingDirectory=@WORKSPACE_DIR@
+Environment=HOME=@HOME_DIR@
+Environment=PYTHONUNBUFFERED=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+Environment="PATH=@SYSTEM_PATH@"
+Environment=STATE_DIR=@STATE_DIR@
+Environment=WORKSPACE_DIR=@WORKSPACE_DIR@
+UnsetEnvironment=@UNSET_ENVIRONMENT@
+UMask=0077
+Nice=10
+CPUQuota=25%
+MemoryMax=512M
+TasksMax=32
+TimeoutStartSec=4min
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@STATE_DIR@ @WORKSPACE_DIR@/docs
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+PrivateNetwork=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ExecStart=/usr/bin/bash -c 'set -euo pipefail; if [[ ! -f "$STATE_DIR/.first-deep-probe-complete" ]]; then "@PYTHON_BIN@" "@RUNTIME_DIR@/tool_telemetry.py" --state-dir "$STATE_DIR" --workspace "$WORKSPACE_DIR" sample --force-deep; : > "$STATE_DIR/.first-deep-probe-complete"; else exec "@PYTHON_BIN@" "@RUNTIME_DIR@/tool_telemetry.py" --state-dir "$STATE_DIR" --workspace "$WORKSPACE_DIR" sample; fi'
